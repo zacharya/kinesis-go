@@ -1,81 +1,63 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
+	"os"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kinesis"
+	"github.com/cloudfoundry/noaa/consumer"
+)
+
+const firehoseSubscriptionId = "firehose-a"
+
+var (
+	dopplerAddress = os.Getenv("DOPPLER_ADDR")
+	authToken      = os.Getenv("CF_ACCESS_TOKEN")
 )
 
 func main() {
 
 	kc := kinesis.New(session.New(), &aws.Config{Region: aws.String("us-east-1")})
 
-	descParams := &kinesis.DescribeStreamInput{
-		StreamName: aws.String("zachstream"), // Required
-		Limit:      aws.Int64(1),
-	}
-	descRaw, err := kc.DescribeStream(descParams)
+	consumer := consumer.New(dopplerAddress, &tls.Config{InsecureSkipVerify: true}, nil)
+	consumer.SetDebugPrinter(ConsoleDebugPrinter{})
 
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
+	fmt.Println("===== Streaming Firehose (will only succeed if you have admin credentials)")
 
-	fmt.Println(descRaw)
+	msgChan, errorChan := consumer.Firehose(firehoseSubscriptionId, authToken)
 
-	var records []*kinesis.PutRecordsRequestEntry
-	for i := 0; i < 100; i++ {
-
-		putrecordsEntry := &kinesis.PutRecordsRequestEntry{
-			PartitionKey: aws.String(string(i)),
-			Data:         []byte("zachpayload1" + string(i)),
+	go func() {
+		for err := range errorChan {
+			fmt.Fprintf(os.Stderr, "%v\n", err.Error())
 		}
-		records = append(records, putrecordsEntry)
+	}()
+
+	for envelope := range msgChan {
+
+		fmt.Println(envelope.String())
+
+		params := &kinesis.PutRecordInput{
+			Data:         []byte(envelope.String()), // Required
+			PartitionKey: aws.String("1"),           // Required
+			StreamName:   aws.String("zachstream"),  // Required
+		}
+		_, err := kc.PutRecord(params)
+		if err != nil {
+			fmt.Println("error!!!: " + err.Error())
+			return
+		}
+
+		fmt.Println("Added record!")
 	}
 
-	putrecordsParams := &kinesis.PutRecordsInput{
-		Records:    records,                  // Required
-		StreamName: aws.String("zachstream"), // Required
-	}
-	putrecordsRaw, err := kc.PutRecords(putrecordsParams)
+}
 
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
+type ConsoleDebugPrinter struct{}
 
-	fmt.Println(putrecordsRaw)
-
-	// shard_itr_params := &kinesis.GetShardIteratorInput{
-	// 	ShardId:           aws.String("0"),          // Required
-	// 	ShardIteratorType: aws.String("LATEST"),     // Required
-	// 	StreamName:        aws.String("zachstream"), // Required
-	// }
-	// shard_itr_raw, err := kc.GetShardIterator(shard_itr_params)
-	//
-	// if err != nil {
-	// 	fmt.Println(err.Error())
-	// 	return
-	// }
-	//
-	// fmt.Println(shard_itr_raw)
-	// shard_itr := shard_itr_raw.ShardIterator
-	//
-	// records_params := &kinesis.GetRecordsInput{
-	// 	ShardIterator: shard_itr, // Required
-	// 	Limit:         aws.Int64(1),
-	// }
-	// records_raw, err := kc.GetRecords(records_params)
-	//
-	// if err != nil {
-	// 	fmt.Println(err.Error())
-	// 	return
-	// }
-	// fmt.Println(records_raw.Records)
-	//
-	// for i := 0; i < len(records_raw.Records); i += 1 {
-	// 	fmt.Println(string(records_raw.Records[i].Data[:]))
-	// }
+func (c ConsoleDebugPrinter) Print(title, dump string) {
+	println(title)
+	println(dump)
 }
